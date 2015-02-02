@@ -9,241 +9,206 @@ import (
 	"image/jpeg"
 	"math"
 	"os"
-	"strings"
-	"sync"
 )
 
 const (
-	ERROR_THRESHOLD = 10
-	NUM_ITERATIONS  = 10000
-	DEBUG           = false
+	ITERATIONS = 1
+	ERROR      = 5
+	DEBUG      = true
+	VERBOSE    = false
 )
 
-var iteration int = 0
-
 type Node struct {
-	dimensions       image.Rectangle
-	children         [4]image.Rectangle
-	meanSquaredError color.RGBA
-	averageColor     color.RGBA
-	hasChildren      bool
+	rect     image.Rectangle
+	err      color.RGBA
+	avgColor color.RGBA
 }
 
 type QuadTree struct {
-	root      Node
-	numNodes  int32
-	leafNodes []Node
-	mutex     sync.Mutex
+	workingList []Node
+	finalList   []Node
+	original    *image.Image
 }
 
-func getMeanSquareError(colour *color.RGBA) float32 {
-	return float32(colour.A+colour.B+colour.R+colour.G) / 4
+func getError(colour color.RGBA) float32 {
+	return float32(colour.A+colour.B+colour.R) / 3
 }
 
-func (qTree *QuadTree) appendLeaf(node Node) {
-	qTree.mutex.Lock()
-	qTree.leafNodes = append(qTree.leafNodes, node)
-	qTree.mutex.Unlock()
+func getRgb(inR uint32, inG uint32, inB uint32, inA uint32) (r float64, g float64, b float64) {
+	r = float64(inR / inA)
+	g = float64(inG / inA)
+	b = float64(inB / inA)
+	return r, g, b
 }
 
-func (qTree *QuadTree) processNode(img *image.Image, rect image.Rectangle, node Node, done chan bool) {
-	if DEBUG {
-		fmt.Printf("Now processing node : (%d, %d) to (%d, %d)\n",
-			rect.Min.X, rect.Min.Y, rect.Max.X, rect.Max.Y)
-	}
-	{
-		qTree.mutex.Lock()
-		iteration += 1
-		qTree.numNodes += 1
-		qTree.mutex.Unlock()
-	}
-	bounds := node.dimensions
-	dX := bounds.Dx()
-	dY := bounds.Dy()
-	if 0 == dX || 0 == dY {
-		if DEBUG {
-			fmt.Printf("Rectangle is 1 pixed wide in at least 1 dimension. Marking as leaf.\n")
-		}
-		qTree.appendLeaf(node)
-		done <- true
-		return
-	}
-	node.averageColor = calcAverage(img, &bounds)
-	node.meanSquaredError = calcMeanSquaredError(img, &bounds, &node.averageColor)
-	err := getMeanSquareError(&node.meanSquaredError)
-	if DEBUG {
-		fmt.Println("Mean squared error and average color is ", err, node.averageColor)
-	}
-	if err < ERROR_THRESHOLD {
-		if DEBUG {
-			fmt.Printf("error is %f\n", err)
-		}
-		qTree.appendLeaf(node)
-		done <- true
-		return
-	}
-
-	if iteration >= NUM_ITERATIONS {
-		if DEBUG {
-			fmt.Printf("Finished %d iterations.\n", NUM_ITERATIONS)
-		}
-		qTree.appendLeaf(node)
-		done <- true
-		return
-	}
-
-	xMidPoint := bounds.Min.X + dX/2
-	yMidPoint := bounds.Min.Y + dY/2
-
-	/** subdivide **/
-	node.children[0] = image.Rect(0, 0, xMidPoint, yMidPoint)
-	node.children[1] = image.Rect(0, yMidPoint+1, xMidPoint, bounds.Max.Y)
-	node.children[2] = image.Rect(xMidPoint+1, 0, bounds.Max.X, yMidPoint)
-	node.children[3] = image.Rect(xMidPoint+1, yMidPoint+1, bounds.Max.X, bounds.Max.Y)
-
-	doneChildren := make(chan bool, 4)
-	var nodeR1, nodeR2, nodeR3, nodeR4 Node
-	childNodes := []*Node{&nodeR1, &nodeR2, &nodeR3, &nodeR4}
-	node.hasChildren = true
-	for i := 0; i < len(childNodes); i++ {
-		childNodes[i].dimensions = node.children[i]
-		go qTree.processNode(img, node.children[i], *childNodes[i], doneChildren)
-	}
-	<-doneChildren
-	<-doneChildren
-	<-doneChildren
-	<-doneChildren
-	done <- true
-
-}
-
-func fillColor(outImage *image.RGBA, node *Node) {
-	dims := node.dimensions
-	if DEBUG {
-		fmt.Printf("Node is : ", dims)
-	}
-	for i := dims.Min.X; i < dims.Max.X; i++ {
-		for j := dims.Min.Y; j < dims.Max.Y; j++ {
-			outImage.SetRGBA(i, j, node.averageColor)
-		}
-	}
-}
-
-func setBlank(outImage *image.RGBA) {
-	bounds := (*outImage).Bounds()
-
-	white := color.RGBA{255, 255, 255, 255}
-	for i := bounds.Min.X; i < bounds.Max.X; i++ {
-		for j := bounds.Min.Y; j < bounds.Max.Y; j++ {
-			outImage.SetRGBA(i, j, white)
-		}
-	}
-}
-
-func (qTree *QuadTree) drawImage() {
-	if DEBUG {
-		fmt.Printf("Drawing image with %d leaf nodes\n", len(qTree.leafNodes))
-	}
-	outImage := image.NewRGBA(qTree.root.dimensions)
-	setBlank(outImage)
-
-	for _, leaf := range qTree.leafNodes {
-		fillColor(outImage, &leaf)
-	}
-
-	f, err := os.Create("owl_2.jpg")
-	if nil != err {
-		fmt.Printf("Encountered error %s\n", err)
-		return
-	}
-	defer f.Close()
-
-	writer := bufio.NewWriter(f)
-	jpeg.Encode(writer, outImage.SubImage(outImage.Bounds()), &jpeg.Options{100})
-
-}
-
-func (qTree *QuadTree) BuildTree(img *image.Image, rect *image.Rectangle) {
-	qTree.leafNodes = make([]Node, 1)
-	qTree.root.dimensions = *rect
-	//qTree.root.parent = nil
-	done := make(chan bool, 1)
-	go qTree.processNode(img, *rect, qTree.root, done)
-	<-done
-	qTree.drawImage()
-
-	fmt.Printf("Built a tree with %d nodes.\n", qTree.numNodes)
-}
-
-func getFile(fileName_p *string) {
-	flag.StringVar(fileName_p, "file", "", "input file name")
-	flag.Parse()
-}
-
-func calcMeanSquaredError(img *image.Image, rectangle *image.Rectangle,
-	averageColor *color.RGBA) color.RGBA {
-	var rErr, gErr, bErr, aErr float64
-	rErr = 0
-	gErr = 0
-	bErr = 0
-	aErr = 0
-	for i := rectangle.Min.X; i < rectangle.Max.X; i++ {
-		for j := rectangle.Min.Y; j < rectangle.Max.Y; j++ {
-			aR, aG, aB, Asq := (*img).At(i, j).RGBA() /** these values are alpha premultiplied **/
-			A := uint32(math.Sqrt(float64(Asq)))
-			r := float64(aR / A)
-			g := float64(aG / A)
-			b := float64(aB / A)
-			rErr += math.Pow(float64(averageColor.R)-r, 2.0)
-			gErr += math.Pow(float64(averageColor.G)-g, 2.0)
-			bErr += math.Pow(float64(averageColor.B)-b, 2.0)
-		}
-	}
-	area := 2 * float64(rectangle.Dx()) * float64(rectangle.Dy())
-	err := color.RGBA{uint8(rErr / area), uint8(gErr / area), uint8(bErr / area), uint8(aErr / area)}
-	return err
-}
-
-func calcAverage(img *image.Image, rectangle *image.Rectangle) color.RGBA {
+func averageColor(img *image.Image, bounds image.Rectangle) color.RGBA {
 	var r, g, b, a float32
 	r = 0
 	g = 0
 	b = 0
 	a = 0
-	for i := rectangle.Min.X; i < rectangle.Max.X; i++ {
-		for j := rectangle.Min.Y; j < rectangle.Max.Y; j++ {
-			R, G, B, A := (*img).At(i, j).RGBA()
-			A = uint32(math.Sqrt(float64(A)))
-			if DEBUG {
-				//fmt.Printf("r = %d, g = %d, b = %d, a = %d\n", R, G, B, A)
+	for i := bounds.Min.X; i < bounds.Max.X; i++ {
+		for j := bounds.Min.Y; j < bounds.Max.Y; j++ {
+			thisR, thisG, thisB, thisA := (*img).At(i, j).RGBA()
+			if DEBUG && VERBOSE {
+				fmt.Printf("color = (%d, %d, %d, %d)\n", thisR, thisG, thisB, thisA)
 			}
-			r += float32(R / A)
-			g += float32(G / A)
-			b += float32(B / A)
-			a += float32(A)
+			aSqrt := float32(math.Sqrt(float64(thisA)))
+
+			r += float32(thisR) / aSqrt
+			g += float32(thisG) / aSqrt
+			b += float32(thisB) / aSqrt
+			a += aSqrt
 		}
 	}
-	area := float32(rectangle.Dx()) * float32(rectangle.Dy())
-	if DEBUG {
-		fmt.Printf("area = %d, r = %d, g = %d, b = %d, a = %d\n", area, r, g, b, a)
-	}
+	area := float32(bounds.Dx()) * float32(bounds.Dy())
 	r /= area
 	g /= area
 	b /= area
 	a /= area
-	rgba := color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)}
-
-	return rgba
+	return color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)}
 }
 
-func simpleWrite(img *image.Image) {
-	bounds := (*img).Bounds()
-	imgCopy := image.NewRGBA(bounds)
+func meanSquaredError(img *image.Image, bounds image.Rectangle, avg color.RGBA) color.RGBA {
+	var rErr, gErr, bErr float64
+	rErr = 0
+	gErr = 0
+	bErr = 0
 	for i := bounds.Min.X; i < bounds.Max.X; i++ {
 		for j := bounds.Min.Y; j < bounds.Max.Y; j++ {
-			r, g, b, a := (*img).At(i, j).RGBA()
-			colour := color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)}
-			imgCopy.SetRGBA(i, j, colour)
+			thisR, thisG, thisB, thisA := (*img).At(i, j).RGBA()
+			thisA = uint32(math.Sqrt(float64(thisA)))
+			r, g, b := getRgb(thisR, thisG, thisB, thisA)
+
+			rErr += math.Pow(float64(avg.R)-r, 2.0)
+			gErr += math.Pow(float64(avg.G)-g, 2.0)
+			bErr += math.Pow(float64(avg.B)-b, 2.0)
+		}
+	}
+
+	area := 2 * float64(bounds.Dx()) * float64(bounds.Dy())
+	err := color.RGBA{uint8(rErr / area), uint8(gErr / area), uint8(bErr / area), 0}
+	return err
+}
+
+func makeNode(img *image.Image, bounds image.Rectangle, nodeChannel chan<- Node) {
+	avgColor := averageColor(img, bounds)
+	meanSquare := meanSquaredError(img, bounds, avgColor)
+	if DEBUG {
+		fmt.Printf("Rectangle = (%d, %d) -> (%d, %d)\n", bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Max.Y)
+		fmt.Printf("average color = (%d, %d, %d, %d), error = (%d, %d, %d)\n",
+			avgColor.A, avgColor.G, avgColor.G, avgColor.R, meanSquare.R, meanSquare.G, meanSquare.B)
+	}
+	node := Node{bounds, avgColor, meanSquare}
+	nodeChannel <- node
+}
+
+func upperLeft(rect image.Rectangle) image.Rectangle {
+	xMidPoint := rect.Min.X + rect.Dx()/2
+	yMidPoint := rect.Min.Y + rect.Dy()/2
+	if DEBUG {
+		fmt.Printf("midx = %d, midy = %d\n", xMidPoint, yMidPoint)
+	}
+	return image.Rect(0, 0, xMidPoint, yMidPoint)
+}
+
+func upperRight(rect image.Rectangle) image.Rectangle {
+	xMidPoint := rect.Min.X + rect.Dx()/2
+	yMidPoint := rect.Min.Y + rect.Dy()/2
+	if DEBUG {
+		fmt.Printf("midx = %d, midy = %d\n", xMidPoint, yMidPoint)
+	}
+	return image.Rect(xMidPoint+1, 0, rect.Max.X, yMidPoint)
+}
+
+func lowerLeft(rect image.Rectangle) image.Rectangle {
+	xMidPoint := rect.Min.X + rect.Dx()/2
+	yMidPoint := rect.Min.Y + rect.Dy()/2
+	if DEBUG {
+		fmt.Printf("midx = %d, midy = %d\n", xMidPoint, yMidPoint)
+	}
+	return image.Rect(0, yMidPoint+1, xMidPoint, rect.Max.Y)
+}
+
+func lowerRight(rect image.Rectangle) image.Rectangle {
+	xMidPoint := rect.Min.X + rect.Dx()/2
+	yMidPoint := rect.Min.Y + rect.Dy()/2
+	if DEBUG {
+		fmt.Printf("midx = %d, midy = %d\n", xMidPoint, yMidPoint)
+	}
+	return image.Rect(xMidPoint+1, yMidPoint+1, rect.Max.X, rect.Max.Y)
+}
+
+type QuarteringStrategy func(image.Rectangle) image.Rectangle
+
+func (qTree *QuadTree) Build(img *image.Image) {
+	qTree.original = img
+	qTree.workingList = make([]Node, 0)
+	qTree.finalList = make([]Node, 0)
+	nodeChan := make(chan Node, 1)
+	makeNode(img, (*img).Bounds(), nodeChan)
+	firstNode := <-nodeChan
+	qTree.workingList = append(qTree.workingList, firstNode)
+
+	strategies := []QuarteringStrategy{upperLeft, upperRight,
+		lowerLeft, lowerRight}
+	for i := 0; i < ITERATIONS; i++ {
+		if len(qTree.workingList) == 0 {
+			fmt.Println("Finished...no more to do\n")
+			break
+		}
+		/** get first element from working list **/
+		numStrategies := len(strategies)
+		currentNode := qTree.workingList[0]
+		if DEBUG {
+			fmt.Printf("Processing node (%d, %d) -> (%d, %d)\n", currentNode.rect.Min.X, currentNode.rect.Min.Y, currentNode.rect.Max.X, currentNode.rect.Max.Y)
+			avgColor := currentNode.avgColor
+			meanSquare := currentNode.err
+			fmt.Printf("average color = (%d, %d, %d, %d), error = (%d, %d, %d)\n",
+				avgColor.A, avgColor.G, avgColor.G, avgColor.R, meanSquare.R, meanSquare.G, meanSquare.B)
+		}
+		nodeChannels := make([]chan Node, numStrategies)
+		/** initialize all nodes **/
+		for i := range nodeChannels {
+			nodeChannels[i] = make(chan Node)
+		}
+		if DEBUG && VERBOSE {
+			fmt.Printf("number of strategies = %d, num node channels = %d\n", numStrategies, len(nodeChannels))
+		}
+		for k := range nodeChannels {
+			go makeNode(img, strategies[k](currentNode.rect), nodeChannels[k])
+		}
+		/** wait for all responses **/
+		for j := range nodeChannels {
+			node := <-nodeChannels[j]
+			if getError(node.err) < ERROR {
+				qTree.finalList = append(qTree.finalList, node)
+			} else {
+				qTree.workingList = append(qTree.workingList, node)
+			}
+		}
+
+		/** update the current working list **/
+		qTree.workingList = qTree.workingList[1:]
+	}
+	if DEBUG {
+		fmt.Printf("Finished iterating, computed num final nodes = %d, num working nodes = %d\n", len(qTree.finalList), len(qTree.workingList))
+	}
+
+	/** whatever is left in the working list now should be merged with the final list **/
+	qTree.finalList = append(qTree.finalList, qTree.workingList...)
+}
+
+func (qTree *QuadTree) Paint() {
+	bounds := (*qTree.original).Bounds()
+	imgCopy := image.NewRGBA(bounds)
+	for index := 0; index < len(qTree.finalList); index++ {
+		colour := qTree.finalList[index].avgColor
+		subImageBounds := qTree.finalList[index].rect
+		for i := subImageBounds.Min.X; i < subImageBounds.Max.X; i++ {
+			for j := subImageBounds.Min.Y; j < subImageBounds.Max.Y; j++ {
+				imgCopy.SetRGBA(i, j, colour)
+			}
 		}
 	}
 	f, err := os.Create("owl_2.jpg")
@@ -260,26 +225,28 @@ func simpleWrite(img *image.Image) {
 func main() {
 	var file string
 	getFile(&file)
-	file = strings.Trim(file, " ")
+
 	if 0 == len(file) {
-		fmt.Println("Usage : ./quadtree -file=<filename>")
+		fmt.Println("Usage: ./quadtree -file=<file>")
 		return
 	}
-	fmt.Printf("file has value '%s'\n", file)
 
 	fileImage, err := os.Open(file)
 	if nil != err {
-		panic("Could not open file")
+		panic("Could not open file.")
 	}
 	image, err := jpeg.Decode(fileImage)
 	if nil != err {
 		panic("Could not decode jpeg image!")
 	}
-
-	//simpleWrite(&image)
-
-	bounds := image.Bounds()
+	/** we've got our jpeg image, start processing **/
 	var qTree QuadTree
-	qTree.BuildTree(&image, &bounds)
-	fmt.Printf("(%d, %d) to (%d, %d)\n", bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Max.Y)
+	qTree.Build(&image)
+	qTree.Paint()
+}
+
+func getFile(fileName_p *string) {
+	flag.StringVar(fileName_p, "file", "", "input file name")
+	flag.Parse()
+
 }
