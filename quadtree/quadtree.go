@@ -13,16 +13,27 @@ import (
 )
 
 const (
-	ITERATIONS = 5000
-	ERROR      = 1
+	ITERATIONS = 10000
+	ERROR      = 5
 	DEBUG      = false
 	VERBOSE    = false
 )
 
 type Node struct {
 	rect     image.Rectangle
-	avgColor color.RGBA
-	err      color.RGBA
+	avgColor FloatRGBA
+	err      FloatRGBA
+}
+
+type FloatRGBA struct {
+	R float32
+	G float32
+	B float32
+	A float32
+}
+
+func (floatRgba FloatRGBA) ToRGBA() color.RGBA {
+	return color.RGBA{uint8(floatRgba.R), uint8(floatRgba.G), uint8(floatRgba.B), uint8(floatRgba.A)}
 }
 
 /** comparison functions **/
@@ -48,7 +59,7 @@ type QuadTree struct {
 	original    *image.Image
 }
 
-func getError(colour color.RGBA) float32 {
+func getError(colour FloatRGBA) float32 {
 	return float32(colour.R+colour.G+colour.B) / 3
 }
 
@@ -59,7 +70,7 @@ func getRgb(inR uint32, inG uint32, inB uint32, inA uint32) (r float64, g float6
 	return r, g, b
 }
 
-func averageColor(img *image.Image, bounds image.Rectangle) color.RGBA {
+func averageColor(img *image.Image, bounds image.Rectangle) FloatRGBA {
 	var r, g, b, a float32
 	r = 0
 	g = 0
@@ -89,10 +100,10 @@ func averageColor(img *image.Image, bounds image.Rectangle) color.RGBA {
 	if DEBUG {
 		fmt.Printf("(after) area = %f, r = %f, g = %f, b = %f, a = %f\n", area, r, g, b, a)
 	}
-	return color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)}
+	return FloatRGBA{r, g, b, a}
 }
 
-func meanSquaredError(img *image.Image, bounds image.Rectangle, avg color.RGBA) color.RGBA {
+func meanSquaredError(img *image.Image, bounds image.Rectangle, avg FloatRGBA) FloatRGBA {
 	var rErr, gErr, bErr float64
 	rErr = 0
 	gErr = 0
@@ -110,7 +121,7 @@ func meanSquaredError(img *image.Image, bounds image.Rectangle, avg color.RGBA) 
 	}
 
 	area := 2 * float64(bounds.Dx()) * float64(bounds.Dy())
-	err := color.RGBA{uint8(rErr / area), uint8(gErr / area), uint8(bErr / area), 0}
+	err := FloatRGBA{float32(rErr / area), float32(gErr / area), float32(bErr / area), 0}
 	return err
 }
 
@@ -231,7 +242,7 @@ func (qTree *QuadTree) Paint() {
 		subImageBounds := qTree.finalList[index].rect
 		for i := subImageBounds.Min.X; i < subImageBounds.Max.X; i++ {
 			for j := subImageBounds.Min.Y; j < subImageBounds.Max.Y; j++ {
-				imgCopy.SetRGBA(i, j, colour)
+				imgCopy.SetRGBA(i, j, colour.ToRGBA())
 			}
 		}
 	}
