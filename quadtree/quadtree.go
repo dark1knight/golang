@@ -9,19 +9,37 @@ import (
 	"image/jpeg"
 	"math"
 	"os"
+	"sort"
 )
 
 const (
-	ITERATIONS = 1
-	ERROR      = 5
-	DEBUG      = true
+	ITERATIONS = 5000
+	ERROR      = 1
+	DEBUG      = false
 	VERBOSE    = false
 )
 
 type Node struct {
 	rect     image.Rectangle
-	err      color.RGBA
 	avgColor color.RGBA
+	err      color.RGBA
+}
+
+/** comparison functions **/
+type ByArea []Node
+
+func (s ByArea) Len() int {
+	return len(s)
+}
+
+func (s ByArea) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
+
+func (s ByArea) Less(i, j int) bool {
+	areaI := s[i].rect.Dx() * s[i].rect.Dy()
+	areaJ := s[j].rect.Dx() * s[j].rect.Dy()
+	return areaJ < areaI
 }
 
 type QuadTree struct {
@@ -31,7 +49,7 @@ type QuadTree struct {
 }
 
 func getError(colour color.RGBA) float32 {
-	return float32(colour.A+colour.B+colour.R) / 3
+	return float32(colour.R+colour.G+colour.B) / 3
 }
 
 func getRgb(inR uint32, inG uint32, inB uint32, inA uint32) (r float64, g float64, b float64) {
@@ -54,7 +72,6 @@ func averageColor(img *image.Image, bounds image.Rectangle) color.RGBA {
 				fmt.Printf("color = (%d, %d, %d, %d)\n", thisR, thisG, thisB, thisA)
 			}
 			aSqrt := float32(math.Sqrt(float64(thisA)))
-
 			r += float32(thisR) / aSqrt
 			g += float32(thisG) / aSqrt
 			b += float32(thisB) / aSqrt
@@ -62,10 +79,16 @@ func averageColor(img *image.Image, bounds image.Rectangle) color.RGBA {
 		}
 	}
 	area := float32(bounds.Dx()) * float32(bounds.Dy())
+	if DEBUG {
+		fmt.Printf("(before) area = %f, r = %f, g = %f, b = %f, a = %f\n", area, r, g, b, a)
+	}
 	r /= area
 	g /= area
 	b /= area
 	a /= area
+	if DEBUG {
+		fmt.Printf("(after) area = %f, r = %f, g = %f, b = %f, a = %f\n", area, r, g, b, a)
+	}
 	return color.RGBA{uint8(r), uint8(g), uint8(b), uint8(a)}
 }
 
@@ -97,7 +120,7 @@ func makeNode(img *image.Image, bounds image.Rectangle, nodeChannel chan<- Node)
 	if DEBUG {
 		fmt.Printf("Rectangle = (%d, %d) -> (%d, %d)\n", bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Max.Y)
 		fmt.Printf("average color = (%d, %d, %d, %d), error = (%d, %d, %d)\n",
-			avgColor.A, avgColor.G, avgColor.G, avgColor.R, meanSquare.R, meanSquare.G, meanSquare.B)
+			avgColor.R, avgColor.G, avgColor.B, avgColor.A, meanSquare.R, meanSquare.G, meanSquare.B)
 	}
 	node := Node{bounds, avgColor, meanSquare}
 	nodeChannel <- node
@@ -109,7 +132,7 @@ func upperLeft(rect image.Rectangle) image.Rectangle {
 	if DEBUG {
 		fmt.Printf("midx = %d, midy = %d\n", xMidPoint, yMidPoint)
 	}
-	return image.Rect(0, 0, xMidPoint, yMidPoint)
+	return image.Rect(rect.Min.X, rect.Min.Y, xMidPoint, yMidPoint)
 }
 
 func upperRight(rect image.Rectangle) image.Rectangle {
@@ -118,7 +141,7 @@ func upperRight(rect image.Rectangle) image.Rectangle {
 	if DEBUG {
 		fmt.Printf("midx = %d, midy = %d\n", xMidPoint, yMidPoint)
 	}
-	return image.Rect(xMidPoint+1, 0, rect.Max.X, yMidPoint)
+	return image.Rect(xMidPoint+1, rect.Min.Y, rect.Max.X, yMidPoint)
 }
 
 func lowerLeft(rect image.Rectangle) image.Rectangle {
@@ -127,7 +150,7 @@ func lowerLeft(rect image.Rectangle) image.Rectangle {
 	if DEBUG {
 		fmt.Printf("midx = %d, midy = %d\n", xMidPoint, yMidPoint)
 	}
-	return image.Rect(0, yMidPoint+1, xMidPoint, rect.Max.Y)
+	return image.Rect(rect.Min.X, yMidPoint+1, xMidPoint, rect.Max.Y)
 }
 
 func lowerRight(rect image.Rectangle) image.Rectangle {
@@ -165,7 +188,7 @@ func (qTree *QuadTree) Build(img *image.Image) {
 			avgColor := currentNode.avgColor
 			meanSquare := currentNode.err
 			fmt.Printf("average color = (%d, %d, %d, %d), error = (%d, %d, %d)\n",
-				avgColor.A, avgColor.G, avgColor.G, avgColor.R, meanSquare.R, meanSquare.G, meanSquare.B)
+				avgColor.R, avgColor.G, avgColor.B, avgColor.A, meanSquare.R, meanSquare.G, meanSquare.B)
 		}
 		nodeChannels := make([]chan Node, numStrategies)
 		/** initialize all nodes **/
@@ -191,17 +214,18 @@ func (qTree *QuadTree) Build(img *image.Image) {
 		/** update the current working list **/
 		qTree.workingList = qTree.workingList[1:]
 	}
-	if DEBUG {
-		fmt.Printf("Finished iterating, computed num final nodes = %d, num working nodes = %d\n", len(qTree.finalList), len(qTree.workingList))
-	}
+	fmt.Printf("Finished iterating, computed num final nodes = %d, num working nodes = %d\n", len(qTree.finalList), len(qTree.workingList))
 
 	/** whatever is left in the working list now should be merged with the final list **/
 	qTree.finalList = append(qTree.finalList, qTree.workingList...)
+	fmt.Printf("Merged lists. List len = %d\n", len(qTree.finalList))
 }
 
 func (qTree *QuadTree) Paint() {
 	bounds := (*qTree.original).Bounds()
 	imgCopy := image.NewRGBA(bounds)
+	/** sort to make sure that the smaller squares always override the larger ones **/
+	sort.Sort(ByArea(qTree.finalList))
 	for index := 0; index < len(qTree.finalList); index++ {
 		colour := qTree.finalList[index].avgColor
 		subImageBounds := qTree.finalList[index].rect
@@ -211,7 +235,7 @@ func (qTree *QuadTree) Paint() {
 			}
 		}
 	}
-	f, err := os.Create("owl_2.jpg")
+	f, err := os.Create("test.jpg")
 	if nil != err {
 		fmt.Printf("Encountered error %s\n", err)
 		return
